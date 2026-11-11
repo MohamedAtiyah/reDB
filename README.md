@@ -208,7 +208,7 @@ SELECT INDNAME, COLNAMES FROM SYSCAT.INDEXES WHERE INDNAME LIKE 'REDB_IX_%';
 
 ## Screenshots & Demo
 - **Live Demo Link:** runs locally (needs a Db2 instance); see [Setup](#setup--installation).
-- **Demo Video Link:** see `video_url` in [submission.json](submission.json).
+- **Demo Video:** [docs/demo/redb-demo.mp4](docs/demo/redb-demo.mp4) (2 min, narrated; captions in [redb-demo.srt](docs/demo/redb-demo.srt)). A hosted link, once uploaded, goes in `video_url` in [submission.json](submission.json).
 - Measured numbers: [docs/RESULTS.md](docs/RESULTS.md)
 
 | | |

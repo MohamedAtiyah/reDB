@@ -1,0 +1,44 @@
+1
+00:00:00,800 --> 00:00:15,780
+This is reDB: an AI agent that tunes IBM Db2, and proves every fix before it touches your database. Language models will happily give you tuning advice, and it is often wrong. So reDB never trusts the model. It makes Db2 prove it.
+
+2
+00:00:16,483 --> 00:00:26,453
+Here is a live retail workload. reDB reads Db2's own monitoring, the package cache, and ranks statements by cost. This one reads over a million rows to return five.
+
+3
+00:00:27,155 --> 00:00:36,485
+One click runs the LangGraph agent. It observes, explains each access plan, diagnoses, prescribes, and proves. Then it stops and waits for a human.
+
+4
+00:00:37,186 --> 00:00:54,716
+For each slow statement you get a plain-English diagnosis and two plans side by side. On the left, the plan today, with full table scans in red. On the right, the plan Db2 would choose with the proposed indexes. Those indexes do not exist yet: they are virtual, priced by Db2's own optimizer.
+
+5
+00:00:55,419 --> 00:01:18,799
+This rewrite was proven to return exactly the same rows, inside Db2, and it is measurably faster, so it is offered. Two textbook rewrites were also proven identical but gave no gain, so reDB rejected them. Index proposals come only from Db2's advisor. It asked for eight; reDB priced the combinations and kept five, with the same benefit. Each one shows its size and its write cost.
+
+6
+00:01:19,503 --> 00:01:25,943
+It also found an index that nothing uses, and offers to drop it, reversibly. Nothing changes until I approve.
+
+7
+00:01:26,643 --> 00:01:31,233
+Now it builds the indexes, refreshes statistics, and measures every statement again.
+
+8
+00:01:31,933 --> 00:01:42,123
+These are measured numbers, not estimates. Total query time is down by about three quarters. At ten times the data, the same run went from two seconds to about a third of a second.
+
+9
+00:01:42,825 --> 00:01:51,335
+Every change is recorded in a system-period temporal table. I can see the full history, travel back in time, and roll any change back with one click.
+
+10
+00:01:52,038 --> 00:01:58,518
+And I can ask questions in plain language. Each question becomes one read-only query, checked by the same safety guard.
+
+11
+00:01:59,219 --> 00:02:04,539
+reDB: re-index, re-write, re-plan. Every fix proven by Db2.
+
