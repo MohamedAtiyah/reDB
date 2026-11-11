@@ -27,6 +27,11 @@ class Rewrite(BaseModel):
     rationale: str = ""
 
 
+class Answer(BaseModel):
+    sql: str = Field(description="One read-only Db2 SELECT that answers the question, no trailing semicolon")
+    explanation: str = Field(description="One sentence saying what the query shows")
+
+
 class Narrative(BaseModel):
     summary: str
 
@@ -49,7 +54,8 @@ Catalog (SYSCAT.COLUMNS / SYSCAT.INDEXES):
 REWRITE_PROMPT = """You are a senior IBM Db2 SQL engineer. If, and only if, the statement can be rewritten into a
 SEMANTICALLY EQUIVALENT Db2 SELECT that the optimizer can execute more cheaply, return it.
 Typical wins: sargable date ranges instead of YEAR()/MONTH() on a column; NOT EXISTS instead of NOT IN
-(only equivalent when the subquery column cannot be NULL - check the catalog); removing redundant DISTINCT.
+(only equivalent when the subquery column cannot be NULL - check the catalog); a UNION of two selects over the
+same table that differ in one literal -> one SELECT DISTINCT with an IN list.
 Keep the same output columns, column order, ordering and row limits. Return should_rewrite=false if unsure.
 Never write DML or DDL.
 
@@ -61,6 +67,61 @@ Access plan:
 
 Catalog:
 {catalog}"""
+
+
+ASK_PROMPT = """You answer questions about an IBM Db2 database and its tuning history by writing ONE read-only
+Db2 SELECT statement. Never write DML, DDL or CALL. Never select the EMBEDDING column. Available objects:
+
+REDB.CHANGES (temporal change ledger; add FOR SYSTEM_TIME FROM '0001-01-01' TO '9999-12-31' for full history):
+  CHANGE_ID, KIND (INDEX|DROP_INDEX|REWRITE|RUNSTATS), TITLE, STMT_TEXT, DDL, UNDO_DDL,
+  STATUS (PROPOSED|APPLIED|ADOPTED|ROLLED_BACK|FAILED), COST_BEFORE, COST_AFTER, MS_BEFORE, MS_AFTER,
+  RATIONALE, APPROVED_BY, SYS_START, SYS_END
+REDB.TUNING_MEMORY: CASE_ID, CREATED_AT, SIGNATURE, FIX_KIND, FIX_DETAIL, GAIN_PCT
+RETAIL.CUSTOMERS(CUSTOMER_ID, FULL_NAME, EMAIL, COUNTRY, SEGMENT, SIGNUP_DATE)
+RETAIL.PRODUCTS(PRODUCT_ID, SKU, PRODUCT_NAME, CATEGORY, UNIT_PRICE)
+RETAIL.ORDERS(ORDER_ID, CUSTOMER_ID, ORDER_DATE, STATUS, CHANNEL, TOTAL_AMOUNT)
+RETAIL.ORDER_ITEMS(ORDER_ID, LINE_NO, PRODUCT_ID, QUANTITY, UNIT_PRICE)
+SYSCAT.TABLES(TABSCHEMA, TABNAME, CARD, STATS_TIME), SYSCAT.INDEXES(TABSCHEMA, TABNAME, INDNAME, COLNAMES, UNIQUERULE)
+TABLE(MON_GET_PKG_CACHE_STMT('D', NULL, NULL, -2)): NUM_EXECUTIONS, STMT_EXEC_TIME (ms), ROWS_READ, ROWS_RETURNED, STMT_TEXT (CLOB: use CAST(SUBSTR(STMT_TEXT,1,300) AS VARCHAR(300)))
+TABLE(MON_GET_TABLE('RETAIL', '', -2)): TABNAME, TABLE_SCANS, ROWS_READ, ROWS_INSERTED, ROWS_UPDATED, ROWS_DELETED
+TABLE(MON_GET_INDEX('RETAIL', '', -2)): TABNAME, IID, INDEX_SCANS, INDEX_ONLY_SCANS
+
+Question: {question}"""
+
+# offline mode: keyword -> canned query (first match wins)
+CANNED = [
+    (("history", "timeline", "when", "time"),
+     "SELECT CHANGE_ID, KIND, STATUS, TITLE, SYS_START, SYS_END FROM REDB.CHANGES "
+     "FOR SYSTEM_TIME FROM '0001-01-01' TO '9999-12-31' ORDER BY CHANGE_ID, SYS_START",
+     "Every version of every ledger row (system-period temporal history)."),
+    (("roll", "undo"),
+     "SELECT CHANGE_ID, KIND, TITLE, UNDO_DDL FROM REDB.CHANGES WHERE STATUS = 'ROLLED_BACK' ORDER BY CHANGE_ID DESC",
+     "Changes that were rolled back."),
+    (("change", "ledger", "applied", "fix", "gain", "improve"),
+     "SELECT CHANGE_ID, KIND, STATUS, TITLE, MS_BEFORE, MS_AFTER, DECIMAL(100 * (MS_BEFORE - MS_AFTER) / "
+     "NULLIF(MS_BEFORE, 0), 5, 1) AS GAIN_PCT FROM REDB.CHANGES ORDER BY CHANGE_ID DESC",
+     "Current state of the change ledger with measured gains."),
+    (("memory", "learn", "case", "remember"),
+     "SELECT CASE_ID, CREATED_AT, FIX_KIND, GAIN_PCT, FIX_DETAIL FROM REDB.TUNING_MEMORY ORDER BY GAIN_PCT DESC",
+     "Solved cases stored in vector memory."),
+    (("index",),
+     "SELECT TABNAME, INDNAME, COLNAMES, UNIQUERULE FROM SYSCAT.INDEXES WHERE TABSCHEMA = 'RETAIL' ORDER BY TABNAME",
+     "Indexes on the RETAIL schema."),
+    (("scan", "table", "read", "write"),
+     "SELECT TABNAME, TABLE_SCANS, ROWS_READ, ROWS_INSERTED + ROWS_UPDATED + ROWS_DELETED AS ROWS_WRITTEN "
+     "FROM TABLE(MON_GET_TABLE('RETAIL', '', -2)) T ORDER BY ROWS_READ DESC",
+     "Table activity since database activation (MON_GET_TABLE)."),
+]
+TOP_ANSWER = ("SELECT NUM_EXECUTIONS, STMT_EXEC_TIME AS TOTAL_MS, ROWS_READ, ROWS_RETURNED, "
+              "CAST(SUBSTR(STMT_TEXT, 1, 300) AS VARCHAR(300)) AS STMT FROM TABLE(MON_GET_PKG_CACHE_STMT('D', NULL, NULL, -2)) T "
+              "WHERE STMT_TEXT LIKE '%RETAIL.%' AND STMT_TEXT NOT LIKE '%MON_GET%' ORDER BY STMT_EXEC_TIME DESC "
+              "FETCH FIRST 10 ROWS ONLY", "The costliest RETAIL statements in the package cache.")
+
+
+def heuristic_answer(question: str) -> "Answer":
+    q = question.lower()
+    sql, why = next(((s, w) for keys, s, w in CANNED if any(k in q for k in keys)), TOP_ANSWER)
+    return Answer(sql=sql, explanation=why + " (offline mode: matched by keyword, set GOOGLE_API_KEY for free-form questions)")
 
 
 class Brain:
@@ -117,6 +178,13 @@ class Brain:
         r = self._structured(Narrative, "Write a 4-6 sentence executive summary of this Db2 tuning run for an "
                                         "engineering manager. Quote the measured numbers.\n" + json.dumps(report, default=str))
         return r.summary if r else heuristic_narrative(report)
+
+    def ask(self, question: str) -> dict[str, Any]:
+        """Natural-language question -> one read-only SELECT (the caller still runs it through sqlguard)."""
+        r = self._structured(Answer, ASK_PROMPT.format(question=question))
+        out = (r or heuristic_answer(question)).model_dump()
+        out["source"] = "gemini" if r else "heuristic"
+        return out
 
     def embed(self, text: str) -> list[float]:
         if self.online and self._emb:
@@ -175,7 +243,19 @@ def heuristic_rewrite(sql: str, not_null_cols: set[str] | None = None) -> Rewrit
             return Rewrite(should_rewrite=True, sql=new,
                            rationale=f"{col} is NOT NULL on both sides, so NOT IN is equivalent to NOT EXISTS, which Db2 runs "
                                      "as an anti-join.")
+    m = _UNION.match(" ".join(sql.split()))
+    if m and m.group(6) != m.group(8):
+        cols, tbl, pre, col, a, post, b = m.group(2, 3, 4, 5, 6, 7, 8)
+        return Rewrite(should_rewrite=True, sql=f"SELECT DISTINCT {cols} FROM {tbl} WHERE {pre}{col} IN ({a}, {b}){post}",
+                       rationale="Both UNION branches scan the same table and differ in one literal; a single "
+                                 "DISTINCT scan with an IN list returns the same set with one pass instead of two.")
     return Rewrite(should_rewrite=False, sql="", rationale="no safe rewrite pattern matched")
+
+
+_LIT = r"('(?:[^']|'')*'|\d+)"
+# SELECT cols FROM t WHERE pre col = lit post UNION SELECT <same, other literal>
+_UNION = re.compile(r"^(SELECT (.+?) FROM (.+?) WHERE (.*?))([\w.]+) = " + _LIT + r"(.*?) UNION SELECT \2 FROM \3 "
+                    r"WHERE \4\5 = " + _LIT + r"\7$", re.I)
 
 
 def heuristic_narrative(report: dict[str, Any]) -> str:

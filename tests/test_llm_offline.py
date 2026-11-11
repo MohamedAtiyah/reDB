@@ -25,3 +25,11 @@ def test_not_in_rewrite_requires_not_null():
     r = heuristic_rewrite(WORKLOAD["W5"], {"CUSTOMER_ID"})
     assert r.should_rewrite and is_safe(r.sql)
     assert "NOT EXISTS (SELECT 1 FROM RETAIL.ORDERS O WHERE O.CUSTOMER_ID = C.CUSTOMER_ID AND" in r.sql
+
+
+def test_union_to_in_rewrite():
+    r = heuristic_rewrite(WORKLOAD["W7"])
+    assert r.should_rewrite and is_safe(r.sql)
+    assert r.sql == ("SELECT DISTINCT CUSTOMER_ID, ORDER_DATE, TOTAL_AMOUNT FROM RETAIL.ORDERS "
+                     "WHERE STATUS IN ('PENDING', 'CANCELLED') AND TOTAL_AMOUNT > 900")
+    assert not heuristic_rewrite("SELECT A FROM T WHERE X = 1 UNION SELECT B FROM T WHERE X = 2").should_rewrite

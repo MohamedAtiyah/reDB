@@ -1,6 +1,7 @@
 """Change ledger: a system-period temporal table that records every change reDB makes."""
 from __future__ import annotations
 
+import re
 from typing import Any
 
 DDL = [
@@ -17,6 +18,10 @@ DDL = [
     "CREATE TABLE REDB.CHANGES_HISTORY LIKE REDB.CHANGES IN REDB_TS32",
     "ALTER TABLE REDB.CHANGES ADD VERSIONING USE HISTORY TABLE REDB.CHANGES_HISTORY",
 ]
+
+_ID = r'"[A-Z0-9_#@$]+"'
+UNDO_OK = re.compile(rf'^(DROP INDEX {_ID}\.{_ID}|CREATE INDEX {_ID}\.{_ID} ON {_ID}\.{_ID} '
+                     rf'\({_ID} (ASC|DESC)(, {_ID} (ASC|DESC))*\))$')
 
 COLS = ("CHANGE_ID, KIND, TITLE, STMT_TEXT, DDL, UNDO_DDL, STATUS, COST_BEFORE, COST_AFTER, "
         "MS_BEFORE, MS_AFTER, RATIONALE, APPROVED_BY, CHAR(SYS_START) AS SYS_START, CHAR(SYS_END) AS SYS_END")
@@ -66,10 +71,11 @@ def rollback(db, change_id: int) -> str:
     status, undo = rows[0]["STATUS"], rows[0]["UNDO_DDL"]
     if status != "APPLIED":
         raise ValueError(f"change {change_id} is {status}, only APPLIED changes can be rolled back")
-    for stmt in filter(None, (undo or "").split("\n")):
-        if stmt.strip().upper().startswith("DROP INDEX \"") or stmt.strip().upper().startswith("DROP INDEX "):
-            db.execute(stmt)
-        else:
-            raise ValueError(f"refusing to run non-DROP INDEX undo: {stmt!r}")
+    stmts = [x.strip() for x in (undo or "").split("\n") if x.strip()]
+    bad = [x for x in stmts if not UNDO_OK.match(x)]
+    if bad:  # undo text is stored data: only ever run the exact index DDL shapes reDB generates
+        raise ValueError(f"refusing to run unexpected undo statement: {bad[0]!r}")
+    for stmt in stmts:
+        db.execute(stmt)
     set_status(db, change_id, "ROLLED_BACK")
     return undo or ""

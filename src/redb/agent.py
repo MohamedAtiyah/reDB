@@ -8,6 +8,7 @@ from typing import Annotated, Any, TypedDict
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
+from .advisor import consolidate
 from .memory import signature
 from .sqlguard import UnsafeSQL, check_readonly
 from .workload import label_for
@@ -26,6 +27,7 @@ class State(TypedDict, total=False):
 
 
 MIN_COST = 100.0  # timerons; cheaper statements are not worth an index
+WRITE_HEAVY_PCT = 20.0  # share of row activity that is writes above which an index gets a warning
 
 
 def _pid(*parts: str) -> str:
@@ -75,49 +77,97 @@ def build_graph(tk, brain, approver: str = "human"):
         return {"cases": cases, "log": [f"diagnose: {len(cases)} diagnoses via {brain.mode}"]}
 
     def prescribe(state: State) -> dict:
-        proposals, seen, log = [], set(), []
+        proposals, log = [], []
+        cases = [dict(c) for c in state["cases"]]
+        by_id = {c["case_id"]: c for c in cases}
+        pool: dict[str, dict] = {}   # index name -> index advised by Db2 (deduplicated across statements)
+        workload: list[tuple] = []   # (case_id, sql, current cost): what the consolidation prices
+        tk.clear_advice()
 
-        def add_index_proposal(case, rec, basis_sql, basis_cost, note=""):
-            idx = [i for i in rec["indexes"] if i["name"] not in seen]
-            if not idx:
+        def advise(case, sql, cost):
+            try:
+                rec = tk.recommend_indexes(sql)
+            except Exception as e:  # noqa: BLE001
+                log.append(f"prescribe: advisor failed for {case['case_id']} ({str(e)[:120]})")
                 return
-            seen.update(i["name"] for i in idx)
-            proposals.append({
-                "id": _pid("INDEX", *[i["name"] for i in idx]), "case_id": case["case_id"], "kind": "INDEX",
-                "title": f"{case['case_id']}: create {len(idx)} index(es) recommended by Db2 advisor{note}",
-                "ddl": [i["ddl"] for i in idx], "undo": [i["undo"] for i in idx],
-                "tables": sorted({i["table"] for i in idx}), "target_sql": basis_sql,
-                "est_cost_before": basis_cost, "est_cost_after": rec["cost_with_indexes"],
-                "est_gain_pct": _gain(basis_cost, rec["cost_with_indexes"]), "verified": False, "evidence": "",
-                "rewrite_sql": None, "rationale": "; ".join(case["diagnosis"]["root_causes"])})
+            workload.append((case["case_id"], sql, cost))
+            for i in rec["indexes"]:
+                pool.setdefault(i["name"], i)
 
-        for c in state["cases"]:
+        for c in cases:
             if c["plan_cost"] < MIN_COST:
                 log.append(f"prescribe: {c['case_id']} is already cheap ({c['plan_cost']:,.1f} timerons), left alone")
                 continue
-            try:
-                add_index_proposal(c, tk.recommend_indexes(c["sql"]), c["sql"], c["plan_cost"])
-            except Exception as e:  # noqa: BLE001
-                log.append(f"prescribe: advisor failed for {c['case_id']} ({str(e)[:120]})")
+            advise(c, c["sql"], c["plan_cost"])
             rw = brain.rewrite({"sql": c["sql"], "plan_summary": c["plan_summary"], "catalog": c["catalog"],
                                 "not_null_cols": set(c["not_null"])})
             if rw["should_rewrite"] and rw["sql"]:
                 try:
                     safe = check_readonly(rw["sql"])
-                except UnsafeSQL as e:
-                    log.append(f"prescribe: rewrite for {c['case_id']} rejected by sqlguard ({e})")
+                    cost = tk.explain_cost(safe)
+                except Exception as e:  # noqa: BLE001 - unsafe or uncompilable rewrite
+                    log.append(f"prescribe: rewrite for {c['case_id']} rejected ({str(e)[:120]})")
                     continue
                 proposals.append({
                     "id": _pid("REWRITE", c["case_id"], safe), "case_id": c["case_id"], "kind": "REWRITE",
                     "title": f"{c['case_id']}: adopt equivalent rewrite", "ddl": [], "undo": [], "tables": c["tables"],
-                    "target_sql": safe, "est_cost_before": c["plan_cost"], "est_cost_after": None,
-                    "est_gain_pct": None, "verified": False, "evidence": "", "rewrite_sql": safe,
-                    "rationale": rw["rationale"], "source": rw["source"]})
-                try:  # the rewrite may unlock an index the original could never use
-                    rec = tk.recommend_indexes(safe)
-                    add_index_proposal(c, rec, safe, tk.explain_cost(safe), " (enables the rewrite)")
-                except Exception as e:  # noqa: BLE001
-                    log.append(f"prescribe: advisor on rewrite failed for {c['case_id']} ({str(e)[:120]})")
+                    "target_sql": safe, "est_cost_before": c["plan_cost"], "est_cost_after": cost,
+                    "est_gain_pct": _gain(c["plan_cost"], cost), "verified": False, "evidence": "",
+                    "rewrite_sql": safe, "rationale": rw["rationale"], "source": rw["source"]})
+                advise(c, safe, cost)  # the rewrite may want a different index than the original
+
+        if pool:
+            # Workload-level what-if: price index subsets on virtual indexes and keep the smallest good set.
+            baseline = sum(cost for *_, cost in workload)
+            kept, dropped = consolidate(
+                list(pool.values()), lambda ix: sum(tk.evaluate_plan(sql, ix)["total_cost"] for _, sql, _ in workload),
+                baseline)
+            served: dict[str, dict] = {i["name"]: {} for i in kept}
+            for cid, sql, cost in workload:
+                plan = tk.evaluate_plan(sql, kept)
+                if sql == by_id[cid]["sql"]:
+                    by_id[cid]["plan_after"] = {"cost": plan["total_cost"], "dot": plan["dot"],
+                                                "summary": plan["summary"], "uses": plan["uses"]}
+                for name in plan["uses"]:
+                    served[name][sql] = (cid, cost, plan["total_cost"])
+            writes = {f"{tk.schema}.{t['table']}": t.get("write_pct", 0.0) for t in state["health"].get("tables", [])}
+            for i in kept:
+                uses = served[i["name"]]
+                if not uses:  # no final plan picks it: building it would be pure overhead
+                    dropped.append(i)
+                    continue
+                serves = sorted({cid for cid, *_ in uses.values()})
+                before, after = sum(u[1] for u in uses.values()), sum(u[2] for u in uses.values())
+                first_sql, (first_case, *_rest) = next(iter(uses.items()))
+                cols = ", ".join(c for c, _ in i["columns"])
+                wp = writes.get(i["table"], 0.0)
+                warnings = ([f"wide index ({len(i['columns'])} columns)"] if len(i["columns"]) > 4 else []) + \
+                           ([f"write-heavy table ({wp:.0f}% of row activity is writes): every write must maintain it"]
+                            if wp >= WRITE_HEAVY_PCT else [])
+                proposals.append({
+                    "id": _pid("INDEX", i["name"]), "case_id": first_case, "kind": "INDEX",
+                    "title": f"Index on {i['table']} ({cols}) for {', '.join(serves)}",
+                    "ddl": [i["ddl"]], "undo": [i["undo"]], "tables": [i["table"]], "target_sql": first_sql,
+                    "serves": serves, "size_mb": i.get("size_mb"), "write_pct": wp, "warnings": warnings,
+                    "est_cost_before": before, "est_cost_after": after, "est_gain_pct": _gain(before, after),
+                    "verified": False, "evidence": "", "rewrite_sql": None,
+                    "rationale": "; ".join(by_id[first_case]["diagnosis"]["root_causes"])})
+            log.append(f"prescribe: Db2 advised {len(pool)} indexes; what-if consolidation kept "
+                       f"{len(pool) - len(dropped)} and dropped {len(dropped)} (>=95% of the gain retained)")
+
+        for u in state["health"].get("unused_indexes", []):
+            try:
+                drop, create = tk.drop_index_ddl(u["table"], u["index"], u["colnames"])
+            except ValueError:
+                continue
+            proposals.append({
+                "id": _pid("DROP_INDEX", u["index"]), "case_id": "-", "kind": "DROP_INDEX",
+                "title": f"Drop unused index {tk.schema}.{u['index']} on {u['table']}", "ddl": [drop], "undo": [create],
+                "tables": [f"{tk.schema}.{u['table']}"], "target_sql": None, "est_cost_before": None,
+                "est_cost_after": None, "est_gain_pct": None, "verified": True, "rewrite_sql": None,
+                "evidence": "MON_GET_INDEX: 0 index scans and 0 index-only scans since database activation "
+                            "(counters reset on restart: confirm the window covers your full workload)",
+                "rationale": "An index nothing reads still costs every insert, update and delete."})
         for t in state["health"].get("stale_tables", []):
             table = f"{tk.schema}.{t.strip()}"
             proposals.append({
@@ -126,7 +176,7 @@ def build_graph(tk, brain, approver: str = "human"):
                 "undo": [], "tables": [table], "target_sql": None, "est_cost_before": None, "est_cost_after": None,
                 "est_gain_pct": None, "verified": True, "evidence": "SYSCAT.TABLES.STATS_TIME is NULL",
                 "rewrite_sql": None, "rationale": "The optimizer is guessing cardinalities without statistics."})
-        return {"proposals": proposals, "log": log + [f"prescribe: {len(proposals)} proposals"]}
+        return {"cases": cases, "proposals": proposals, "log": log + [f"prescribe: {len(proposals)} proposals"]}
 
     def prove(state: State) -> dict:
         cases = []
@@ -140,17 +190,19 @@ def build_graph(tk, brain, approver: str = "human"):
             if p["kind"] == "INDEX":
                 ok = p["est_cost_after"] is not None and p["est_cost_after"] < (p["est_cost_before"] or 0)
                 p.update(verified=ok, evidence=(
-                    f"Db2 optimizer, virtual indexes (nothing built): {p['est_cost_before']:,.1f} → "
-                    f"{p['est_cost_after']:,.1f} timerons" if p["est_cost_after"] is not None else "advisor gave no cost"))
+                    f"Db2 optimizer on virtual indexes (EVALUATE INDEXES, nothing built): "
+                    f"{p['est_cost_before']:,.1f} → {p['est_cost_after']:,.1f} timerons across {', '.join(p['serves'])}; "
+                    f"est. size {p['size_mb']} MB; writes are {p['write_pct']:.0f}% of the table's row activity"
+                    + "".join(f"; WARNING: {w}" for w in p["warnings"])))
             elif p["kind"] == "REWRITE":
                 eq = tk.prove_equivalent(c["sql"], p["rewrite_sql"])
-                cost = tk.explain_cost(p["rewrite_sql"])
-                ms_rw = tk.timed(p["rewrite_sql"])
-                # equivalent is not enough: the rewrite must also not be slower (cheaper plan, or not >5% slower)
-                faster = cost < p["est_cost_before"] * 0.99 or ms_rw <= c["ms_before"] * 0.95
+                cost, ms_rw = p["est_cost_after"], tk.timed(p["rewrite_sql"])
+                # equivalent is not enough: a clearly cheaper plan that is not slower, or far faster measured
+                # (25% is well outside timing noise on millisecond queries)
+                faster = ms_rw <= c["ms_before"] * 0.75 or (cost < p["est_cost_before"] * 0.95
+                                                            and ms_rw <= c["ms_before"] * 1.05)
                 verdict = "" if faster else "; REJECTED: equivalent but no gain (Db2 already optimises the original)"
-                p.update(est_cost_after=cost, est_gain_pct=_gain(p["est_cost_before"], cost),
-                         equivalent=eq["proven"], verified=eq["proven"] and faster, ms_rewrite=ms_rw,
+                p.update(equivalent=eq["proven"], verified=eq["proven"] and faster, ms_rewrite=ms_rw,
                          evidence=f"{eq['detail']}; EXPLAIN {p['est_cost_before']:,.1f} → {cost:,.1f}"
                                   f" timerons; measured {c['ms_before']:,.1f} → {ms_rw:,.1f} ms{verdict}")
             if c:
@@ -166,7 +218,7 @@ def build_graph(tk, brain, approver: str = "human"):
 
     def apply(state: State) -> dict:
         approved = set(state.get("approved") or [])
-        order = {"RUNSTATS": 0, "INDEX": 1, "REWRITE": 2}
+        order = {"RUNSTATS": 0, "INDEX": 1, "DROP_INDEX": 2, "REWRITE": 3}
         todo = sorted([p for p in state["proposals"] if p["id"] in approved and p["verified"]],
                       key=lambda p: order[p["kind"]])
         cases = {c["case_id"]: c for c in state["cases"]}

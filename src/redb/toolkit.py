@@ -7,6 +7,7 @@ from . import advisor, explain, ledger, monitor, verify
 from .config import Settings, get_settings
 from .db import Db
 from .memory import Memory, hash_embed
+from .sqlguard import check_readonly
 
 
 class Toolkit:
@@ -27,15 +28,37 @@ class Toolkit:
         return monitor.health(self.db, self.schema)
 
     # Diagnose
-    def explain(self, sql: str) -> dict[str, Any]:
-        plan = explain.explain(self.db, sql)
+    def _finish(self, plan: dict[str, Any], names: dict[str, str] | None = None) -> dict[str, Any]:
         plan["summary"] = explain.summarize(plan)
-        plan["dot"] = explain.to_dot(plan)
+        plan["dot"] = explain.to_dot(plan, names)
         plan["nodes"] = {str(k): v for k, v in plan["nodes"].items()}  # JSON/checkpoint friendly
         return plan
 
+    def explain(self, sql: str) -> dict[str, Any]:
+        plan = explain.explain(self.db, sql)
+        for ix in plan["indexes"]:  # index-only plans never name the table: resolve it from the catalog
+            s, _, n = ix.partition(".")
+            t = self.db.query("SELECT TRIM(TABSCHEMA) || '.' || TRIM(TABNAME) AS T FROM SYSCAT.INDEXES "
+                              "WHERE INDSCHEMA = ? AND INDNAME = ?", (s, n))
+            plan["tables"] = sorted(set(plan["tables"]) | {r["T"] for r in t})
+        return self._finish(plan)
+
     def explain_cost(self, sql: str) -> float:
         return explain.explain(self.db, sql)["total_cost"]
+
+    def clear_advice(self) -> None:
+        advisor.clear_advice(self.db)
+
+    def evaluate_plan(self, sql: str, indexes: list[dict]) -> dict[str, Any]:
+        """Plan + cost of `sql` if exactly these advised indexes existed (Db2 EVALUATE INDEXES, nothing built)."""
+        keys = advisor.evaluate(self.db, sql, [i["advise_name"] for i in indexes])
+        if not keys:
+            raise RuntimeError("EVALUATE INDEXES produced no plan")
+        plan = explain.build_plan(*explain.read_plan(self.db, keys))
+        plan["total_cost"] = float(keys["TOTAL_COST"])
+        by_advise = {i["advise_name"]: i["name"] for i in indexes}
+        plan["uses"] = sorted(by_advise[x.split(".")[-1]] for x in plan["indexes"] if x.split(".")[-1] in by_advise)
+        return self._finish(plan, by_advise)
 
     def catalog(self, tables: list[str]) -> dict[str, Any]:
         lines, not_null = [], set()
@@ -60,7 +83,7 @@ class Toolkit:
     def prove_equivalent(self, original: str, rewrite: str) -> dict[str, Any]:
         return verify.prove(self.db, original, rewrite)
 
-    def timed(self, sql: str, runs: int = 3) -> float:
+    def timed(self, sql: str, runs: int = 5) -> float:
         return self.db.timed(sql, runs)
 
     def runstats_sql(self, table: str) -> str:
@@ -69,6 +92,16 @@ class Toolkit:
             raise ValueError(f"unsafe table name {table!r}")
         return (f"CALL SYSPROC.ADMIN_CMD('RUNSTATS ON TABLE {schema}.{name} "
                 "WITH DISTRIBUTION AND DETAILED INDEXES ALL')")
+
+    def drop_index_ddl(self, table: str, index: str, colnames: str) -> tuple[str, str]:
+        """(drop_ddl, undo_ddl) for an existing index; the undo recreates it from the catalog definition."""
+        _, create, drop = advisor.index_ddl(self.schema, table, advisor.parse_colnames(colnames), name=index)
+        return drop, create
+
+    def ask(self, sql: str, limit: int = 200) -> list[dict[str, Any]]:
+        """Run LLM-written SQL: read-only guard first, row cap always."""
+        safe = check_readonly(sql)
+        return self.db.query(f"SELECT * FROM ({safe}) AS Q ORDER BY ORDER OF Q FETCH FIRST {int(limit)} ROWS ONLY")
 
     def run_ddl(self, ddl: str) -> None:
         self.db.execute(ddl)

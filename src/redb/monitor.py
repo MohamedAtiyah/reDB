@@ -16,10 +16,11 @@ BUFFERPOOL_SQL = """SELECT SUM(POOL_DATA_L_READS + POOL_INDEX_L_READS) AS L,
  SUM(POOL_DATA_P_READS + POOL_INDEX_P_READS) AS P
 FROM TABLE(MON_GET_BUFFERPOOL('', -2)) B"""
 
-TABLE_SQL = """SELECT TABNAME, SUM(TABLE_SCANS) AS TABLE_SCANS, SUM(ROWS_READ) AS ROWS_READ
+TABLE_SQL = """SELECT TABNAME, SUM(TABLE_SCANS) AS TABLE_SCANS, SUM(ROWS_READ) AS ROWS_READ,
+ SUM(ROWS_INSERTED + ROWS_UPDATED + ROWS_DELETED) AS ROWS_WRITTEN
 FROM TABLE(MON_GET_TABLE(?, '', -2)) T GROUP BY TABNAME ORDER BY 3 DESC"""
 
-UNUSED_INDEX_SQL = """SELECT I.TABNAME, I.INDNAME, M.INDEX_SCANS, M.INDEX_ONLY_SCANS
+UNUSED_INDEX_SQL = """SELECT I.TABNAME, I.INDNAME, I.COLNAMES, M.INDEX_SCANS, M.INDEX_ONLY_SCANS
 FROM TABLE(MON_GET_INDEX(?, '', -2)) M
 JOIN SYSCAT.INDEXES I ON I.TABSCHEMA = M.TABSCHEMA AND I.TABNAME = M.TABNAME AND I.IID = M.IID
 WHERE I.UNIQUERULE = 'D' AND M.INDEX_SCANS = 0 AND M.INDEX_ONLY_SCANS = 0"""
@@ -55,6 +56,12 @@ def shape_statement(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def write_pct(rows_read, rows_written) -> float:
+    """Share of a table's row activity that is writes (index maintenance cost signal)."""
+    r, w = float(rows_read or 0), float(rows_written or 0)
+    return round(100 * w / (r + w), 1) if r + w else 0.0
+
+
 def top_statements(db, schema: str, limit: int = 10) -> list[dict[str, Any]]:
     rows = db.query(TOP_SQL)
     out = [shape_statement(r) for r in rows if is_candidate(r["STMT_TEXT"] or "", schema)]
@@ -68,10 +75,11 @@ def health(db, schema: str) -> dict[str, Any]:
     tables = db.query(TABLE_SQL, (schema,))
     return {
         "bufferpool_hit_pct": round(hit, 2),
-        "tables": [{"table": t["TABNAME"], "table_scans": int(t["TABLE_SCANS"] or 0),
-                    "rows_read": int(t["ROWS_READ"] or 0)} for t in tables],
+        "tables": [{"table": t["TABNAME"].strip(), "table_scans": int(t["TABLE_SCANS"] or 0),
+                    "rows_read": int(t["ROWS_READ"] or 0), "rows_written": int(t["ROWS_WRITTEN"] or 0),
+                    "write_pct": write_pct(t["ROWS_READ"], t["ROWS_WRITTEN"])} for t in tables],
         "table_scans": sum(int(t["TABLE_SCANS"] or 0) for t in tables),
-        "unused_indexes": [{"table": r["TABNAME"], "index": r["INDNAME"]}
+        "unused_indexes": [{"table": r["TABNAME"].strip(), "index": r["INDNAME"].strip(), "colnames": r["COLNAMES"]}
                            for r in db.query(UNUSED_INDEX_SQL, (schema,))],
         "stale_tables": [r["TABNAME"] for r in db.query(STALE_SQL, (schema,))],
     }

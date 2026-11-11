@@ -67,7 +67,7 @@ class Db:
         self._ibm_db.free_result(stmt)
         return n
 
-    def timed(self, sql: str, runs: int = 3) -> float:
+    def timed(self, sql: str, runs: int = 5) -> float:
         """Median wall-clock ms over `runs` executions, all rows fetched (one warm-up)."""
         self.run_untagged(TAG + sql)
         times = []

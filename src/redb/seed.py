@@ -63,8 +63,12 @@ def runstats(db, table: str) -> None:
     db.execute(f"CALL SYSPROC.ADMIN_CMD('RUNSTATS ON TABLE {table} WITH DISTRIBUTION AND DETAILED INDEXES ALL')")
 
 
-def setup(db, scale: float = 1.0, reset: bool = False, embed_dim: int = 768) -> list[str]:
+def setup(db, scale: float = 1.0, reset: bool = False, embed_dim: int = 768, reseed: bool = False) -> list[str]:
     msgs = []
+    if reseed:  # rebuild RETAIL at a new --scale
+        for t in ("ORDER_ITEMS", "ORDERS", "PRODUCTS", "CUSTOMERS"):
+            if _exists(db, "RETAIL", t):
+                db.execute(f"DROP TABLE RETAIL.{t}")
     explain.ensure_explain_tables(db)
     # more secondary log space for the bulk load (online-configurable)
     try:
@@ -106,7 +110,18 @@ def setup(db, scale: float = 1.0, reset: bool = False, embed_dim: int = 768) -> 
         msgs.append(f"seeded RETAIL: {nc:,} customers, 2,000 products, {no:,} orders, {3 * no:,} order items")
     if reset:
         msgs += reset_demo(db)
+    else:
+        _legacy_index(db)
     return msgs
+
+
+LEGACY_INDEX = "IX_CUSTOMERS_SIGNUP_LEGACY"
+
+
+def _legacy_index(db) -> None:
+    """A deliberately useless index (nothing filters on SIGNUP_DATE) for reDB to find and propose dropping."""
+    if not db.scalar("SELECT COUNT(*) FROM SYSCAT.INDEXES WHERE INDSCHEMA = 'RETAIL' AND INDNAME = ?", (LEGACY_INDEX,)):
+        db.execute(f'CREATE INDEX "RETAIL"."{LEGACY_INDEX}" ON "RETAIL"."CUSTOMERS" ("SIGNUP_DATE" ASC)')
 
 
 def reset_demo(db) -> list[str]:
@@ -117,6 +132,8 @@ def reset_demo(db) -> list[str]:
         db.execute(f'DROP INDEX "{r["S"]}"."{r["N"]}"')
         msgs.append(f"dropped {r['S']}.{r['N']}")
         runstats(db, f"{r['S']}.{r['T']}")
+    _legacy_index(db)
     if _exists(db, "REDB", "CHANGES"):
-        db.execute("UPDATE REDB.CHANGES SET STATUS = 'ROLLED_BACK' WHERE STATUS = 'APPLIED' AND KIND = 'INDEX'")
+        db.execute("UPDATE REDB.CHANGES SET STATUS = 'ROLLED_BACK' "
+                   "WHERE STATUS = 'APPLIED' AND KIND IN ('INDEX', 'DROP_INDEX')")
     return msgs

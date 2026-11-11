@@ -27,6 +27,7 @@
       "MON_GET_PKG_CACHE_STMT / MON_GET_TABLE / MON_GET_INDEX / MON_GET_BUFFERPOOL",
       "EXPLAIN PLAN + EXPLAIN_STATEMENT / EXPLAIN_OPERATOR / EXPLAIN_STREAM",
       "CURRENT EXPLAIN MODE RECOMMEND INDEXES + ADVISE_INDEX (virtual indexes)",
+      "CURRENT EXPLAIN MODE EVALUATE INDEXES (workload-level what-if index consolidation)",
       "EXCEPT ALL equivalence proofs",
       "SYSPROC.ADMIN_CMD RUNSTATS",
       "System-period temporal tables + FOR SYSTEM_TIME",
@@ -41,8 +42,18 @@
     ]
   },
   "tech_stack": {
-    "languages": ["Python"],
-    "frameworks": ["LangGraph", "LangChain", "Streamlit", "Pydantic"],
-    "ai_models": ["Google Gemini (gemini-3.5-flash)", "Gemini embeddings (gemini-embedding-001)"]
+    "languages": [
+      "Python"
+    ],
+    "frameworks": [
+      "LangGraph",
+      "LangChain",
+      "Streamlit",
+      "Pydantic"
+    ],
+    "ai_models": [
+      "Google Gemini (gemini-3.5-flash)",
+      "Gemini embeddings (gemini-embedding-001)"
+    ]
   }
 }

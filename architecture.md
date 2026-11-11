@@ -56,8 +56,8 @@ The live graph is rendered in the app's **How it works** tab from `graph.get_gra
 ## Component Breakdown
 
 1. **User Interface / Client Layer**:
-   - `src/app.py` (Streamlit): sidebar (Db2 connection, Gemini on/off, run workload, reset demo) and five tabs: Workload KPIs, Analyze (diagnosis, Graphviz plan, proven proposals, approval checkboxes), Results (before/after chart), Change ledger (timeline, `AS OF` time travel, rollback), How it works.
-   - `src/redb/cli.py`: `setup | workload | analyze [--approve-all] | ui`.
+   - `src/app.py` (Streamlit): sidebar (Db2 connection, Gemini on/off, run workload, reset demo) and six tabs: Workload KPIs, Analyze (diagnosis, Graphviz plan now vs with virtual indexes, proven proposals, approval checkboxes), Results (before/after chart, report download), Change ledger (timeline, `AS OF` time travel, rollback), Ask reDB, How it works.
+   - `src/redb/cli.py`: `setup [--scale N --reseed --reset] | workload | analyze [--approve-all] [--report FILE] | ui`.
 2. **Application Backend Layer**:
    - `toolkit.py`: the only object that touches Db2, so the agent is unit-tested with a `FakeToolkit`.
    - `db.py`: `ibm_db` wrapper (`query`, `execute`, `exec_immediate`, `scalar`, `timed` = median ms with every row fetched). Internal statements are prefixed `/*REDB*/` so the monitor never tunes reDB itself.
@@ -66,12 +66,13 @@ The live graph is rendered in the app's **How it works** tab from `graph.get_gra
 3. **Database Layer (IBM Db2)**:
    - `monitor.py`: `MON_GET_PKG_CACHE_STMT`, `MON_GET_TABLE`, `MON_GET_INDEX` ⋈ `SYSCAT.INDEXES`, `MON_GET_BUFFERPOOL`, `SYSCAT.TABLES` stats age.
    - `explain.py`: `EXPLAIN PLAN SET QUERYNO/QUERYTAG`, then `EXPLAIN_STATEMENT` → `EXPLAIN_OPERATOR` + `EXPLAIN_STREAM` keyed by `(EXPLAIN_TIME, SOURCE_NAME, STMTNO, SECTNO)`; operator tree, flags and DOT.
-   - `advisor.py`: `SET CURRENT EXPLAIN MODE RECOMMEND INDEXES`, compile the statement (SQL0217W expected), always reset to `NO` in `finally`; read the P-level cost after a timestamp marker and `ADVISE_INDEX` rows with `EXISTS='N'`.
+   - `advisor.py`: `SET CURRENT EXPLAIN MODE RECOMMEND INDEXES`, compile the statement (SQL0217W expected), always reset to `NO` in `finally`; read the P-level cost after a timestamp marker and `ADVISE_INDEX` rows with `EXISTS='N'` (including `NLEAF` for a size estimate). `evaluate()` flips `ADVISE_INDEX.USE_INDEX` and compiles under `EVALUATE INDEXES` to price any subset of virtual indexes; `consolidate()` uses that to prune the advised set greedily while keeping ≥95% of the workload gain.
+   - `report.py`: Markdown tuning report from the final agent state.
    - `verify.py`: `EXCEPT ALL` both ways inside Db2, plus an ordered comparison if the outer query has `ORDER BY`.
    - `ledger.py`, `memory.py`: temporal ledger and vector memory.
 4. **AI / Model Orchestration Layer**:
    - `agent.py`: the LangGraph `StateGraph` described above.
-   - `llm.py`: `Brain.diagnose / rewrite / narrate / embed` with Pydantic structured output via `ChatGoogleGenerativeAI.with_structured_output`; every method falls back to a heuristic.
+   - `llm.py`: `Brain.diagnose / rewrite / narrate / ask / embed` with Pydantic structured output via `ChatGoogleGenerativeAI.with_structured_output`; every method falls back to a heuristic.
 
 ---
 
@@ -79,7 +80,7 @@ The live graph is rendered in the app's **How it works** tab from `graph.get_gra
 
 1. **Input Ingestion**: the application workload runs against `RETAIL`; Db2 accumulates per-statement metrics in the package cache. The user clicks *Analyze* (or runs `analyze`).
 2. **Context Retrieval**: `observe` reads the top statements and health; `explain` stores and reads access plans; the toolkit adds catalog context (column types, NOT NULL, existing indexes, cardinalities).
-3. **Augmentation & Inference**: `diagnose` sends SQL + plan summary + metrics + catalog to Gemini and gets a typed diagnosis. `prescribe` asks Db2's advisor for indexes and Gemini for a rewrite (guarded). `prove` asks Db2 to price virtual indexes, check rewrite equivalence with `EXCEPT ALL`, EXPLAIN the rewrite and time both versions. `recall` searches `REDB.TUNING_MEMORY` with `VECTOR_DISTANCE`.
+3. **Augmentation & Inference**: `diagnose` sends SQL + plan summary + metrics + catalog to Gemini and gets a typed diagnosis. `prescribe` asks Db2's advisor for indexes per statement, consolidates them across the workload with `EVALUATE INDEXES` (which also yields each statement's "after" plan for the plan diff), attaches size and write-share warnings, asks Gemini for a rewrite (guarded), and turns unused indexes into reversible drop proposals. `prove` checks the consolidated virtual-index costs, checks rewrite equivalence with `EXCEPT ALL`, EXPLAIN the rewrite and time both versions. `recall` searches `REDB.TUNING_MEMORY` with `VECTOR_DISTANCE`.
 4. **State Persistence**: after approval, `apply` inserts a PROPOSED ledger row (`FINAL TABLE`), runs the advisor DDL, runs `ADMIN_CMD RUNSTATS`, re-measures, updates the row to APPLIED/ADOPTED (Db2 versions the old row into `CHANGES_HISTORY`), and inserts the solved case with its embedding into vector memory.
 5. **Response Delivery**: `report` re-times every statement, computes the total reduction, and Gemini writes an executive summary; the UI renders the cards, charts, ledger and time travel.
 
@@ -146,6 +147,11 @@ SET CURRENT EXPLAIN MODE RECOMMEND INDEXES;  -- then compile the statement (SQL0
 SET CURRENT EXPLAIN MODE NO;
 SELECT NAME, TBCREATOR, TBNAME, COLNAMES FROM ADVISE_INDEX WHERE EXISTS = 'N' AND EXPLAIN_TIME >= TIMESTAMP(?);
 
+-- workload-level what-if: price a chosen subset of the virtual indexes
+UPDATE ADVISE_INDEX SET USE_INDEX = CASE WHEN NAME IN (?, ...) THEN 'Y' ELSE 'N' END;
+SET CURRENT EXPLAIN MODE EVALUATE INDEXES;   -- then compile each workload statement, read EXPLAIN_STATEMENT
+SET CURRENT EXPLAIN MODE NO;
+
 -- rewrite equivalence on current data
 SELECT (SELECT COUNT(*) FROM ((SELECT * FROM (<A>) X) EXCEPT ALL (SELECT * FROM (<B>) Y)) D1),
        (SELECT COUNT(*) FROM ((SELECT * FROM (<B>) X) EXCEPT ALL (SELECT * FROM (<A>) Y)) D2)
@@ -169,9 +175,11 @@ FROM REDB.TUNING_MEMORY ORDER BY DIST FETCH FIRST 3 ROWS ONLY;
 |---|---|
 | LLM writes destructive SQL | The LLM **never writes DDL**. Its only SQL output (a rewrite) must pass `sqlguard`: one statement, starts with `SELECT`/`WITH`, no `;`, no INSERT/UPDATE/DELETE/MERGE/DROP/ALTER/CREATE/GRANT/REVOKE/TRUNCATE/CALL (checked after removing comments and string literals). It is only ever read, never executed as DDL. |
 | Bad or injected index DDL | DDL is generated only from Db2's `ADVISE_INDEX` rows, always non-unique, with every identifier validated against `^[A-Z0-9_#@$]+$` and quoted. |
-| Advice that does not help | Index proposals must lower the optimizer's cost on virtual indexes; rewrites must be equivalent (`EXCEPT ALL` both ways, ordered comparison when ordered) **and** cheaper or faster. Unproven proposals cannot be approved in the UI and are skipped by `apply`. Statements under 100 timerons are left alone. |
+| Too many indexes | Advised indexes are consolidated across the workload with `EVALUATE INDEXES`; an index is only proposed if a final plan uses it, and each proposal shows estimated size, table write share and wide/write-heavy warnings. |
+| Advice that does not help | Index proposals must lower the optimizer's cost on virtual indexes; rewrites must be equivalent (`EXCEPT ALL` both ways, ordered comparison when ordered) **and** clearly cheaper to plan without being slower, or ≥25% faster measured. Unproven proposals cannot be approved in the UI and are skipped by `apply`. Statements under 100 timerons are left alone. |
 | Unreviewed changes | LangGraph `interrupt_before=["apply"]`: nothing changes until a human approves specific proposal ids. |
-| No audit trail / no undo | Every change goes through `REDB.CHANGES` (PROPOSED → APPLIED → ROLLED_BACK, or ADOPTED / FAILED), versioned by Db2 into `CHANGES_HISTORY` with `TRANS_ID`. Rollback runs only stored `DROP INDEX` undo statements. A failed apply undoes any partial DDL. |
+| No audit trail / no undo | Every change goes through `REDB.CHANGES` (kinds INDEX, DROP_INDEX, REWRITE, RUNSTATS; PROPOSED → APPLIED → ROLLED_BACK, or ADOPTED / FAILED), versioned by Db2 into `CHANGES_HISTORY` with `TRANS_ID`. Rollback runs only undo statements matching the exact `DROP INDEX` / `CREATE INDEX` shapes reDB generates (so a dropped unused index can be restored). A failed apply undoes any partial DDL. |
+| Free-form questions (Ask reDB) | The generated SQL passes the same `sqlguard`, runs wrapped in a 200-row cap, and is shown to the user. |
 | Session left in advisor mode | `SET CURRENT EXPLAIN MODE NO` always runs in a `finally` block. |
 
 ---

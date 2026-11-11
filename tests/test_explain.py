@@ -20,7 +20,7 @@ def test_tree_and_flags():
     plan = build_plan(OPS, STREAMS)
     assert plan["root"] == 1
     assert [c["id"] for c in plan["nodes"][1]["children"]] == [2]
-    assert plan["nodes"][4]["objects"] == [{"schema": "RETAIL", "name": "ORDERS", "rows": 400000.0}]
+    assert plan["nodes"][4]["objects"] == [{"schema": "RETAIL", "name": "ORDERS", "rows": 400000.0, "index": False}]
     kinds = {f["kind"] for f in plan["flags"]}
     assert "TABLE_SCAN" in kinds and "SORT" in kinds
     scans = [f for f in plan["flags"] if f["kind"] == "TABLE_SCAN"]
@@ -45,3 +45,13 @@ def test_summary_and_dot():
     assert "shape=cylinder" in dot and "ORDERS" in dot
     assert 'op4 [shape=box, style=filled, fillcolor="#f8d7da"' in dot  # TBSCAN in red
     assert "op4 -> op3" in dot
+
+
+def test_index_scan_objects_are_indexes_not_tables():
+    ops = [dict(OPS[0]), {**OPS[1], "OPERATOR_TYPE": "IXSCAN"}]
+    streams = [dict(STREAMS[0]), {"SOURCE_TYPE": "D", "SOURCE_ID": -1, "TARGET_ID": 2, "OBJECT_SCHEMA": "SYSTEM",
+                                  "OBJECT_NAME": "IDX1", "STREAM_COUNT": 400000}]
+    plan = build_plan(ops, streams)
+    assert plan["tables"] == [] and plan["indexes"] == ["SYSTEM.IDX1"] and not plan["flags"]
+    dot = to_dot(plan, {"IDX1": "REDB_IX_ORDERS_X"})
+    assert "REDB_IX_ORDERS_X" in dot and 'fillcolor="#d1f2e0"' in dot

@@ -59,7 +59,8 @@ def build_plan(ops: list[dict], streams: list[dict]) -> dict[str, Any]:
         rows = float(s["STREAM_COUNT"] or 0)
         if (s["SOURCE_TYPE"] or "").strip() == "D":
             node["objects"].append({"schema": (s["OBJECT_SCHEMA"] or "").strip(),
-                                    "name": (s["OBJECT_NAME"] or "").strip(), "rows": rows})
+                                    "name": (s["OBJECT_NAME"] or "").strip(), "rows": rows,
+                                    "index": node["type"] == "IXSCAN"})  # an IXSCAN's data object is the index
         elif s["SOURCE_ID"] is not None and int(s["SOURCE_ID"]) in nodes:
             node["children"].append({"id": int(s["SOURCE_ID"]), "rows": rows})
     root = next((n["id"] for n in nodes.values() if n["type"] == "RETURN"), min(nodes) if nodes else None)
@@ -68,7 +69,7 @@ def build_plan(ops: list[dict], streams: list[dict]) -> dict[str, Any]:
     for n in nodes.values():
         if n["type"] == "TBSCAN":
             for obj in n["objects"]:
-                if obj["rows"] >= BIG_TABLE_ROWS:
+                if obj["rows"] >= BIG_TABLE_ROWS and not obj["index"]:
                     flags.append({"op": n["id"], "kind": "TABLE_SCAN",
                                   "detail": f"full scan of {obj['schema']}.{obj['name']} (~{obj['rows']:,.0f} rows)"})
         elif n["type"] == "SORT":
@@ -76,8 +77,10 @@ def build_plan(ops: list[dict], streams: list[dict]) -> dict[str, Any]:
         elif n["type"] in ("HSJOIN", "NLJOIN", "MSJOIN") and total and n["cost"] > 0.5 * total:
             flags.append({"op": n["id"], "kind": "COSTLY_JOIN",
                           "detail": f"{n['type']} accounts for {100 * n['cost'] / total:.0f}% of cost"})
+    objs = [o for n in nodes.values() for o in n["objects"]]
     return {"root": root, "nodes": nodes, "flags": flags, "operators": sorted({n["type"] for n in nodes.values()}),
-            "tables": sorted({f"{o['schema']}.{o['name']}" for n in nodes.values() for o in n["objects"]})}
+            "tables": sorted({f"{o['schema']}.{o['name']}" for o in objs if not o["index"]}),
+            "indexes": sorted({f"{o['schema']}.{o['name']}" for o in objs if o["index"]})}
 
 
 def summarize(plan: dict[str, Any]) -> str:
@@ -97,17 +100,23 @@ def summarize(plan: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def to_dot(plan: dict[str, Any]) -> str:
+def to_dot(plan: dict[str, Any], names: dict[str, str] | None = None) -> str:
+    """Graphviz DOT. `names` maps object names (e.g. the advisor's virtual index names) to display names."""
+    names = names or {}
+    fills = {"TBSCAN": 'fillcolor="#f8d7da", color="#c0392b"', "IXSCAN": 'fillcolor="#d1f2e0", color="#0b6b3a"'}
     out = ['digraph plan {', 'rankdir=BT; node [fontname="Helvetica", fontsize=10];']
     for n in plan["nodes"].values():
-        style = 'style=filled, fillcolor="#f8d7da", color="#c0392b"' if n["type"] == "TBSCAN" \
-            else 'style=filled, fillcolor="#e8f0fe", color="#1f4e8c"'
+        style = "style=filled, " + fills.get(n["type"], 'fillcolor="#e8f0fe", color="#1f4e8c"')
         out.append(f'op{n["id"]} [shape=box, {style}, label="{n["type"]} #{n["id"]}\\ncost {n["cost"]:,.0f}"];')
         for c in n["children"]:
             out.append(f'op{c["id"]} -> op{n["id"]} [label="{c["rows"]:,.0f}"];')
         for i, o in enumerate(n["objects"]):
             tid = f'tb{n["id"]}_{i}'
-            out.append(f'{tid} [shape=cylinder, style=filled, fillcolor="#fff3cd", label="{o["name"]}\\n{o["rows"]:,.0f} rows"];')
+            label = names.get(o["name"], o["name"])
+            if o["index"]:
+                out.append(f'{tid} [shape=note, style=filled, fillcolor="#d1f2e0", label="index\\n{label}"];')
+            else:
+                out.append(f'{tid} [shape=cylinder, style=filled, fillcolor="#fff3cd", label="{label}\\n{o["rows"]:,.0f} rows"];')
             out.append(f'{tid} -> op{n["id"]};')
     out.append("}")
     return "\n".join(out)

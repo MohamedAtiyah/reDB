@@ -13,6 +13,8 @@ import streamlit as st  # noqa: E402
 from redb import seed, workload  # noqa: E402
 from redb.agent import build_graph, graph_dot  # noqa: E402
 from redb.llm import Brain  # noqa: E402
+from redb.report import to_markdown  # noqa: E402
+from redb.sqlguard import UnsafeSQL  # noqa: E402
 
 st.set_page_config(page_title="reDB · Db2 tuning agent", page_icon="🛠️", layout="wide")
 st.markdown("""<style>
@@ -69,7 +71,7 @@ with st.sidebar:
         st.toast(f"Reset: {len(msgs)} indexes dropped")
 
 graph = ss.setdefault("graph", build_graph(tk, brain, approver="streamlit"))
-tabs = st.tabs(["📈 Workload", "🔬 Analyze", "🏁 Results", "📜 Change ledger", "🧭 How it works"])
+tabs = st.tabs(["📈 Workload", "🔬 Analyze", "🏁 Results", "📜 Change ledger", "💬 Ask reDB", "🧭 How it works"])
 
 # ---------------------------------------------------------------- workload
 with tabs[0]:
@@ -132,7 +134,19 @@ with tabs[1]:
                         st.caption(f"🧠 similar past case #{sim['case_id']} (cosine sim {sim['similarity']}): "
                                    f"{sim['fix_kind']} gave {sim['gain_pct']:.0f}% gain")
                 with b:
-                    st.graphviz_chart(case["dot"], use_container_width=True)
+                    after = case.get("plan_after")
+                    if after:
+                        now, then = st.columns(2)
+                        now.caption(f"Plan now · {case['plan_cost']:,.0f} timerons")
+                        now.graphviz_chart(case["dot"], use_container_width=True)
+                        then.caption(f"With proposed indexes (virtual) · {after['cost']:,.0f} timerons")
+                        then.graphviz_chart(after["dot"], use_container_width=True)
+                    else:
+                        st.graphviz_chart(case["dot"], use_container_width=True)
+                served = [p for p in props if p["kind"] == "INDEX" and case["case_id"] in p.get("serves", [])
+                          and p["case_id"] != case["case_id"]]
+                for p in served:
+                    st.caption(f"↪ also served by: {p['title']} (listed under {p['case_id']})")
                 for p in [p for p in props if p["case_id"] == case["case_id"]]:
                     st.markdown(f"**{p['kind']}** · {p['title']}")
                     cols = st.columns(4)
@@ -153,11 +167,21 @@ with tabs[1]:
                         cols[2].metric("Measured now", f"{p.get('ms_before', 0):.1f} ms")
                     if cols[3].checkbox("Approve", key=f"ap_{p['id']}", disabled=not p["verified"]):
                         approved.append(p["id"])
+                    if p["kind"] == "INDEX":
+                        st.markdown(badge(f"est. size {p['size_mb']} MB") + badge(f"table writes {p['write_pct']:.0f}%")
+                                    + "".join(badge("⚠ " + w, "bad") for w in p["warnings"]), unsafe_allow_html=True)
                     st.code("\n".join(p["ddl"]) or p["rewrite_sql"] or "", language="sql")
                     st.caption(p["evidence"])
-        for p in [p for p in props if p["case_id"] == "-"]:
-            if st.checkbox(f"Approve: {p['title']}", key=f"ap_{p['id']}"):
-                approved.append(p["id"])
+        general = [p for p in props if p["case_id"] == "-"]
+        if general:
+            with st.container(border=True):
+                st.markdown("### Housekeeping")
+                for p in general:
+                    st.markdown(f"**{p['kind']}** · {p['title']}")
+                    if st.checkbox("Approve", key=f"ap_{p['id']}"):
+                        approved.append(p["id"])
+                    st.code("\n".join(p["ddl"]), language="sql")
+                    st.caption(p["evidence"] + (f" · undo: `{p['undo'][0]}`" if p["undo"] else ""))
         if not state.get("report"):
             if st.button(f"✅ Apply {len(approved)} approved", type="primary", disabled=not approved):
                 cfg = {"configurable": {"thread_id": ss.thread}}
@@ -186,6 +210,8 @@ with tabs[2]:
         st.bar_chart(df[["ms_before", "ms_after"]], stack=False, color=["#c0392b", "#1f8a4c"])
         st.dataframe(df, use_container_width=True)
         st.markdown(f"> {rep['narrative']}")
+        st.download_button("⬇ Download tuning report (Markdown)", to_markdown(ss.state, brain.mode),
+                           file_name="redb-tuning-report.md", mime="text/markdown")
         with st.expander("Agent log"):
             st.code("\n".join(ss.state.get("log", [])))
 
@@ -222,8 +248,27 @@ with tabs[3]:
         st.dataframe(pd.DataFrame(tk.ledger_as_of(ts))[["CHANGE_ID", "KIND", "STATUS", "TITLE"]],
                      hide_index=True, use_container_width=True)
 
-# ---------------------------------------------------------------- how it works
+# ---------------------------------------------------------------- ask
 with tabs[4]:
+    st.markdown("Ask about the workload, the change ledger or the tuning memory. The question becomes **one "
+                "read-only SELECT**, which must pass the SQL guard before Db2 runs it (capped at 200 rows).")
+    examples = ["What are the slowest statements?", "Which changes were applied and what did they gain?",
+                "Show the full history of the ledger", "Which indexes exist on RETAIL?", "Which tables get scanned most?"]
+    ex = st.pills("Examples", examples, label_visibility="collapsed")
+    q = st.text_input("Question", value=ex or "", placeholder="e.g. Which changes were rolled back?")
+    if q:
+        ans = brain.ask(q)
+        st.caption(f"{ans['explanation']} · source: {ans['source']}")
+        st.code(ans["sql"], language="sql")
+        try:
+            st.dataframe(pd.DataFrame(tk.ask(ans["sql"])), hide_index=True, use_container_width=True)
+        except UnsafeSQL as e:
+            st.error(f"Blocked by the SQL guard: {e}")
+        except Exception as e:  # noqa: BLE001
+            st.error(f"Db2 rejected the query: {str(e)[:300]}")
+
+# ---------------------------------------------------------------- how it works
+with tabs[5]:
     st.markdown("""
 **The LLM never writes DDL.** Index DDL comes only from Db2's own advisor (`ADVISE_INDEX`), rewrites must pass a
 read-only SQL guard and be **proven equivalent inside Db2** (`EXCEPT ALL` both ways), and nothing is applied
