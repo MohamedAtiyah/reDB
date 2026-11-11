@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#ffffff">
+<title>reDB · Interactive Demo</title>
+<meta name="description" content="reDB: an AI agent that tunes IBM Db2 and proves every fix. Interactive replay of a measured run on Db2 12.1.5.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root { --fg:#171717; --muted:#525252; --soft:#737373; --line:rgba(0,0,0,.10); --bg:#fff; --bg2:#FAFAFA; --blue:#0F62FE; --blue-soft:#EDF5FF; --green:#198038; --green-soft:#DEFBE6; --red:#DA1E28; --red-soft:#FFF1F1; --amber:#8E6A00; --amber-soft:#FCF4D6; }
+* { box-sizing:border-box; }
+html { color-scheme:light; -webkit-text-size-adjust:100%; }
+@media (pointer:fine) { html { overscroll-behavior:none; } }
+body { margin:0; font-family:Geist, system-ui, -apple-system, sans-serif; color:var(--fg); background:var(--bg); line-height:1.5; font-size:15px; }
+code, .mono { font-family:"Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px; }
+.num { font-variant-numeric:tabular-nums; }
+a { color:var(--blue); }
+.skip { position:absolute; left:-999px; top:8px; background:var(--fg); color:#fff; padding:8px 12px; border-radius:6px; }
+.skip:focus { left:8px; }
+.wrap { max-width:1180px; margin:0 auto; padding:0 24px; }
+header { border-bottom:1px solid var(--line); background:#fff; }
+.top { display:flex; align-items:center; gap:16px; padding:16px 0; flex-wrap:wrap; }
+.brand { font-weight:700; font-size:20px; letter-spacing:-.01em; }
+.tag { color:var(--muted); font-size:14px; }
+.top nav { margin-left:auto; display:flex; gap:16px; font-size:14px; }
+.top nav a { color:var(--muted); text-decoration:none; }
+.top nav a:hover { color:var(--fg); }
+.notice { background:var(--blue-soft); color:#002D9C; font-size:13.5px; padding:10px 0; border-bottom:1px solid #D0E2FF; }
+h1 { font-size:40px; line-height:1.15; letter-spacing:-.02em; margin:40px 0 10px; }
+h2 { font-size:24px; letter-spacing:-.01em; margin:0 0 6px; scroll-margin-top:16px; }
+h3 { font-size:16px; margin:0 0 4px; }
+.lead { color:var(--muted); font-size:17px; max-width:760px; margin:0 0 24px; }
+.steps { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin:28px 0 8px; }
+.step { border:1px solid var(--line); border-radius:10px; padding:12px 14px; background:#fff; font-size:14px; color:var(--soft); }
+.step b { display:block; color:var(--muted); font-size:12px; letter-spacing:.06em; text-transform:uppercase; }
+.step.on { border-color:var(--blue); color:var(--fg); box-shadow:0 0 0 3px var(--blue-soft); }
+.step.done { color:var(--green); }
+.step.done b { color:var(--green); }
+section.panel { border:1px solid var(--line); border-radius:14px; background:#fff; box-shadow:0 1px 2px rgba(0,0,0,.04), 0 6px 20px rgba(0,0,0,.04); padding:24px; margin:20px 0; }
+.row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+.spacer { flex:1; }
+button { font:inherit; font-weight:500; font-size:14px; border-radius:8px; padding:9px 16px; border:1px solid var(--line); background:#fff; color:var(--fg); cursor:pointer; touch-action:manipulation; min-height:38px; transition:background-color .15s, border-color .15s, color .15s; }
+button:hover { background:var(--bg2); border-color:rgba(0,0,0,.2); }
+button.primary { background:var(--blue); border-color:var(--blue); color:#fff; }
+button.primary:hover { background:#0043CE; border-color:#0043CE; }
+button:disabled { opacity:.5; cursor:not-allowed; }
+button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible { outline:2px solid var(--blue); outline-offset:2px; }
+.seg { display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+.seg button { border:0; border-radius:0; min-height:34px; padding:6px 12px; }
+.seg button[aria-pressed="true"] { background:var(--fg); color:#fff; }
+.kpis { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin:18px 0; }
+.kpi { border:1px solid var(--line); border-radius:12px; padding:14px 16px; background:var(--bg2); }
+.kpi .l { font-size:12.5px; color:var(--muted); }
+.kpi .v { font-size:28px; font-weight:600; letter-spacing:-.01em; }
+.kpi .c { font-size:12.5px; color:var(--soft); }
+table { width:100%; border-collapse:collapse; font-size:14px; }
+th { text-align:left; font-weight:500; color:var(--muted); font-size:12.5px; border-bottom:1px solid var(--line); padding:8px 10px; }
+td { border-bottom:1px solid var(--line); padding:9px 10px; vertical-align:top; }
+td.r, th.r { text-align:right; }
+.sql { color:#393939; max-width:520px; }
+.badge { display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:500; padding:2px 8px; border-radius:999px; border:1px solid var(--line); white-space:nowrap; }
+.dot { width:7px; height:7px; border-radius:50%; display:inline-block; }
+.b-high { background:var(--red-soft); color:var(--red); border-color:#FFD7D9; } .b-high .dot{ background:var(--red); }
+.b-med { background:var(--amber-soft); color:var(--amber); border-color:#F1E3A8; } .b-med .dot{ background:#B28600; }
+.b-low { background:var(--bg2); color:var(--muted); } .b-low .dot{ background:#A8A8A8; }
+.b-ok { background:var(--green-soft); color:var(--green); border-color:#A7F0BA; } .b-ok .dot{ background:var(--green); }
+.b-no { background:var(--bg2); color:var(--muted); }
+.b-kind { background:var(--blue-soft); color:#0043CE; border-color:#D0E2FF; }
+.grid2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+.prop { border:1px solid var(--line); border-radius:12px; padding:14px 16px; display:grid; grid-template-columns:auto 1fr auto; gap:12px; align-items:start; }
+.prop label { display:contents; cursor:pointer; }
+.prop input { width:18px; height:18px; margin-top:2px; accent-color:var(--blue); }
+.prop .meta { color:var(--muted); font-size:13px; }
+.prop .cost { text-align:right; font-size:13px; color:var(--muted); white-space:nowrap; }
+.prop .cost b { color:var(--fg); font-size:15px; }
+.note { font-size:13px; color:var(--amber); }
+.bars { display:grid; gap:10px; }
+.bar { display:grid; grid-template-columns:52px 1fr 150px; gap:10px; align-items:center; font-size:13.5px; }
+.track { position:relative; height:22px; background:var(--bg2); border-radius:6px; overflow:hidden; }
+.track i { position:absolute; left:0; top:0; bottom:0; border-radius:6px; }
+.track .before { background:#C6C6C6; }
+.track .after { background:var(--blue); height:12px; top:5px; }
+@media (prefers-reduced-motion:no-preference) { .track i { transition:width .4s ease-out; } }
+.legend { display:flex; gap:16px; font-size:12.5px; color:var(--muted); margin-top:8px; }
+.sw { display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:6px; vertical-align:-1px; }
+.empty { border:1px dashed rgba(0,0,0,.18); border-radius:12px; padding:28px; text-align:center; color:var(--muted); background:var(--bg2); }
+.log { font-family:"Geist Mono", ui-monospace, monospace; font-size:12.5px; background:#161616; color:#E0E0E0; border-radius:10px; padding:12px 14px; max-height:180px; overflow:auto; }
+.log div { white-space:pre-wrap; }
+.shots { display:grid; grid-template-columns:repeat(2,1fr); gap:14px; }
+.shots figure { margin:0; border:1px solid var(--line); border-radius:12px; overflow:hidden; background:#fff; }
+.shots img { width:100%; height:auto; display:block; aspect-ratio:16/10; object-fit:cover; object-position:top; }
+.shots figcaption { font-size:13px; color:var(--muted); padding:8px 12px; border-top:1px solid var(--line); }
+details summary { cursor:pointer; color:var(--muted); font-size:13.5px; }
+footer { color:var(--soft); font-size:13px; padding:32px 0 48px; }
+@media (max-width:820px) { .steps, .kpis { grid-template-columns:repeat(2,1fr); } .grid2, .shots { grid-template-columns:1fr; } h1 { font-size:30px; } .bar { grid-template-columns:44px 1fr 110px; } .sql { display:none; } }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header>
+  <div class="wrap top">
+    <span class="brand" translate="no">reDB</span>
+    <span class="tag">AI agent that tunes IBM&nbsp;Db2 &amp; proves every fix</span>
+    <nav aria-label="Project links">
+      <a href="#demo">Demo</a>
+      <a href="#screens">Screenshots</a>
+      <a href="https://github.com/MohamedAtiyah/reDB">Source Code</a>
+      <a href="https://github.com/MohamedAtiyah/reDB/blob/Main/docs/RESULTS.md">Results</a>
+    </nav>
+  </div>
+  <div class="notice"><div class="wrap">This page replays a <b>real measured run</b> of reDB on IBM&nbsp;Db2 Community Edition 12.1.5. Every number comes from <a href="https://github.com/MohamedAtiyah/reDB/blob/Main/docs/RESULTS.md">docs/RESULTS.md</a>. To run reDB against your own Db2, follow the 5-step setup in the <a href="https://github.com/MohamedAtiyah/reDB#setup--installation">README</a>.</div></div>
+</header>
+
+<main id="main" class="wrap">
+  <h1>Find slow queries. Prove the fix. Apply it only after you approve.</h1>
+  <p class="lead">reDB reads Db2’s own monitoring, explains each slow query with Gemini, and lets Db2 prove every proposal: virtual-index costs for indexes, <code>EXCEPT&nbsp;ALL</code> equivalence for rewrites. Step through the run below.</p>
+
+  <div class="steps" role="list" aria-label="Demo progress">
+    <div class="step on" role="listitem" id="s1"><b>Step 1</b>Run Workload</div>
+    <div class="step" role="listitem" id="s2"><b>Step 2</b>Analyze</div>
+    <div class="step" role="listitem" id="s3"><b>Step 3</b>Approve</div>
+    <div class="step" role="listitem" id="s4"><b>Step 4</b>Measure</div>
+  </div>
+
+  <section class="panel" id="demo" aria-labelledby="h-work">
+    <div class="row">
+      <div><h2 id="h-work">Workload</h2><div class="tag">7 demo statements captured from <code>MON_GET_PKG_CACHE_STMT</code></div></div>
+      <span class="spacer"></span>
+      <div class="seg" role="group" aria-label="Data scale">
+        <button type="button" id="sc1" aria-pressed="true">Scale 1 · 1.6M rows</button>
+        <button type="button" id="sc10" aria-pressed="false">Scale 10 · 17M rows</button>
+      </div>
+      <button type="button" class="primary" id="btnRun">Run Workload</button>
+    </div>
+    <div id="workOut" aria-live="polite">
+      <div class="empty" style="margin-top:18px;">No statements captured yet. Run the workload to give reDB something to tune.</div>
+    </div>
+  </section>
+
+  <section class="panel" aria-labelledby="h-an">
+    <div class="row">
+      <div><h2 id="h-an">Analyze &amp; Approve</h2><div class="tag">LangGraph pauses before <code>apply</code> until you approve</div></div>
+      <span class="spacer"></span>
+      <button type="button" id="btnAnalyze" disabled>Analyze</button>
+    </div>
+    <div id="anOut" aria-live="polite">
+      <div class="empty" style="margin-top:18px;">Run the workload first, then analyze it.</div>
+    </div>
+  </section>
+
+  <section class="panel" aria-labelledby="h-res">
+    <div class="row">
+      <div><h2 id="h-res">Results</h2><div class="tag">Median of 5 timed runs after 1 warm-up, all rows fetched</div></div>
+    </div>
+    <div id="resOut" aria-live="polite">
+      <div class="empty" style="margin-top:18px;">Approve proposals and apply them to see measured before &amp; after times.</div>
+    </div>
+  </section>
+
+  <section class="panel" aria-labelledby="h-led">
+    <h2 id="h-led">Change Ledger</h2>
+    <div class="tag">System-period temporal table <code>REDB.CHANGES</code>, every change has undo DDL</div>
+    <div id="ledOut" style="margin-top:14px;"><div class="empty">No changes yet.</div></div>
+  </section>
+
+  <section class="panel" id="screens" aria-labelledby="h-shots">
+    <h2 id="h-shots">Screenshots From the Real App</h2>
+    <div class="tag" style="margin-bottom:14px;">Streamlit UI running against Db2 12.1.5</div>
+    <div class="shots">
+      <figure><img src="screenshots/02-workload.png" alt="Workload tab with KPIs and top statements" loading="lazy" width="1600" height="1000"><figcaption>Workload: top statements from MON_GET</figcaption></figure>
+      <figure><img src="screenshots/03-analyze-plan-diff.png" alt="Plan now versus plan with proposed indexes" loading="lazy" width="1600" height="1000"><figcaption>Plan diff: table scans become index scans</figcaption></figure>
+      <figure><img src="screenshots/04-proposals.png" alt="Proven proposals with approval checkboxes" loading="lazy" width="1600" height="1000"><figcaption>Proven proposals awaiting approval</figcaption></figure>
+      <figure><img src="screenshots/06-results.png" alt="Before and after chart" loading="lazy" width="1600" height="1000"><figcaption>Measured before &amp; after</figcaption></figure>
+      <figure><img src="screenshots/07-ledger.png" alt="Temporal change ledger with rollback" loading="lazy" width="1600" height="1000"><figcaption>Temporal ledger with rollback</figcaption></figure>
+      <figure><img src="screenshots/09-how-it-works.png" alt="LangGraph agent diagram" loading="lazy" width="1600" height="1000"><figcaption>The live LangGraph agent graph</figcaption></figure>
+    </div>
+  </section>
+</main>
+
+<footer class="wrap">Built by Mohamed Atiyah for Db2Hack 2026 · <a href="https://github.com/MohamedAtiyah/reDB">github.com/MohamedAtiyah/reDB</a> · Python, LangGraph, LangChain, Google Gemini, <span translate="no">ibm_db</span>, IBM&nbsp;Db2 12.1.5</footer>
+
+<script>
+const SQL = {
+  W1:"SELECT ORDER_ID, ORDER_DATE, STATUS, TOTAL_AMOUNT FROM RETAIL.ORDERS WHERE CUSTOMER_ID = 4242 ORDER BY ORDER_DATE DESC FETCH FIRST 20 ROWS ONLY",
+  W2:"SELECT P.PRODUCT_NAME, SUM(I.QUANTITY) AS UNITS, SUM(I.QUANTITY * I.UNIT_PRICE) AS REVENUE FROM RETAIL.ORDER_ITEMS I JOIN RETAIL.PRODUCTS P ON P.PRODUCT_ID = I.PRODUCT_ID WHERE I.PRODUCT_ID = 77 GROUP BY P.PRODUCT_NAME",
+  W3:"SELECT CHANNEL, COUNT(*) AS ORDERS, SUM(TOTAL_AMOUNT) AS REVENUE FROM RETAIL.ORDERS WHERE YEAR(ORDER_DATE) = 2024 AND MONTH(ORDER_DATE) = 3 GROUP BY CHANNEL",
+  W4:"SELECT O.ORDER_ID, O.ORDER_DATE, O.TOTAL_AMOUNT, C.FULL_NAME, C.EMAIL FROM RETAIL.ORDERS O JOIN RETAIL.CUSTOMERS C ON C.CUSTOMER_ID = O.CUSTOMER_ID WHERE O.STATUS = 'PENDING' AND O.ORDER_DATE BETWEEN '2025-06-01' AND '2025-06-30' ORDER BY O.TOTAL_AMOUNT DESC FETCH FIRST 50 ROWS ONLY",
+  W5:"SELECT COUNT(*) FROM RETAIL.CUSTOMERS C WHERE C.SEGMENT = 'ENTERPRISE' AND C.CUSTOMER_ID NOT IN (SELECT O.CUSTOMER_ID FROM RETAIL.ORDERS O WHERE O.ORDER_DATE >= '2025-01-01')",
+  W6:"SELECT FULL_NAME, EMAIL, COUNTRY FROM RETAIL.CUSTOMERS WHERE CUSTOMER_ID = 1234",
+  W7:"SELECT CUSTOMER_ID, ORDER_DATE, TOTAL_AMOUNT FROM RETAIL.ORDERS WHERE STATUS = 'PENDING' AND TOTAL_AMOUNT > 900 UNION SELECT CUSTOMER_ID, ORDER_DATE, TOTAL_AMOUNT FROM RETAIL.ORDERS WHERE STATUS = 'CANCELLED' AND TOTAL_AMOUNT > 900"
+};
+// Measured values from docs/RESULTS.md
+const DATA = {
+  1:  { before:{W7:60.2,W2:33.9,W4:21.4,W5:20.4,W3:17.0,W1:13.2,W6:0.3}, after:{W7:16.9,W2:0.3,W4:6.2,W5:6.6,W3:4.2,W1:0.3,W6:0.3}, total:[166.4,34.7], advised:8 },
+  10: { before:{W7:782.0,W2:391.1,W5:268.3,W3:197.3,W4:186.0,W1:164.9,W6:0.6}, after:{W7:164.7,W2:0.6,W5:78.7,W3:106.0,W4:1.3,W1:0.3,W6:0.3}, total:[1990.2,351.8], advised:9 }
+};
+const DIAG = {
+  W7:"Two full scans of ORDERS joined by a UNION sort. Both branches filter on STATUS and TOTAL_AMOUNT, which no index covers.",
+  W2:"Full scan of ORDER_ITEMS to find one product. There is no index on PRODUCT_ID, so every row is read to return a handful.",
+  W4:"Scan of ORDERS on STATUS and a date range, then a sort on TOTAL_AMOUNT before the join to CUSTOMERS.",
+  W5:"Scans of CUSTOMERS and ORDERS for an anti-join. Db2 already turns NOT IN on NOT NULL columns into an anti-join; the cost is the scans.",
+  W3:"YEAR() and MONTH() on ORDER_DATE stop Db2 from using a date range, and there is no date index anyway.",
+  W1:"Scan of ORDERS to find one customer’s latest orders. No index on CUSTOMER_ID.",
+  W6:"Primary-key lookup. Already optimal; reDB leaves it alone."
+};
+const IDX = [
+  { id:"A", t:"ORDERS (STATUS, TOTAL_AMOUNT, ORDER_DATE, CUSTOMER_ID)", serves:["W4","W7"], cost:"3,621.5 → 588.4", size:"16.7 MB" },
+  { id:"B", t:"ORDER_ITEMS (PRODUCT_ID, UNIT_PRICE, QUANTITY)", serves:["W2"], cost:"1,708.4 → 14.4", size:"29.0 MB" },
+  { id:"C", t:"ORDERS (ORDER_DATE, CUSTOMER_ID)", serves:["W3","W5"], cost:"3,949.2 → 1,361.7", size:"6.4 MB" },
+  { id:"D", t:"CUSTOMERS (SEGMENT, CUSTOMER_ID)", serves:["W5"], cost:"2,278.6 → 942.5", size:"2.6 MB" },
+  { id:"E", t:"ORDERS (CUSTOMER_ID, ORDER_DATE, TOTAL_AMOUNT, STATUS, ORDER_ID)", serves:["W1"], cost:"806.5 → 7.1", size:"18.8 MB", warn:"Wide index: 5 columns" }
+];
+const NEEDS = { W1:["E"], W2:["B"], W3:["C"], W4:["A"], W5:["C","D"], W7:["A"], W6:[] };
+const REW = [
+  { w:"W7", t:"UNION of two scans → one SELECT DISTINCT … IN (…) scan", eq:true, cost:"1,655.8 → 811.4", ms:"60.2 → 36.8 ms", ok:true },
+  { w:"W3", t:"YEAR()/MONTH() → half-open date range", eq:true, cost:"836.5 → 834.1", ms:"17.0 → 16.7 ms", ok:false },
+  { w:"W5", t:"NOT IN → NOT EXISTS", eq:true, cost:"1,139.3 → 1,139.3", ms:"20.4 → 21.1 ms", ok:false }
+];
+let scale = 1, approved = new Set(), applied = new Set(), ledger = [], dropApproved = false, dropped = false;
+const $ = id => document.getElementById(id);
+const fmt = n => n.toLocaleString(undefined,{ minimumFractionDigits:1, maximumFractionDigits:1 });
+const sev = ms => { const top = DATA[scale].before.W7; return ms >= top*0.4 ? ["High","b-high"] : ms >= top*0.1 ? ["Medium","b-med"] : ["Low","b-low"]; };
+function setStep(n){ for(let i=1;i<=4;i++){ const e=$("s"+i); e.classList.toggle("on", i===n); e.classList.toggle("done", i<n); } }
+function stamp(){ return new Date().toISOString().replace("T"," ").slice(0,23); }
+
+function renderWork(){
+  const d = DATA[scale], rows = Object.entries(d.before).sort((a,b)=>b[1]-a[1]);
+  const total = rows.reduce((s,[,v])=>s+v,0);
+  $("workOut").innerHTML = `
+  <div class="kpis">
+    <div class="kpi"><div class="l">Total Exec Time</div><div class="v num">${fmt(total)}&nbsp;ms</div><div class="c">Sum of median statement times</div></div>
+    <div class="kpi"><div class="l">Slowest Statement</div><div class="v num">${fmt(rows[0][1])}&nbsp;ms</div><div class="c">${rows[0][0]}: UNION of two scans</div></div>
+    <div class="kpi"><div class="l">Statements Captured</div><div class="v num">7</div><div class="c">From the package cache</div></div>
+    <div class="kpi"><div class="l">Rows Seeded</div><div class="v num">${scale===1?"1.6M":"17M"}</div><div class="c">Generated inside Db2</div></div>
+  </div>
+  <table><thead><tr><th>Statement</th><th>Severity</th><th class="r">Avg Time (ms)</th><th>SQL</th></tr></thead><tbody>
+  ${rows.map(([k,v])=>{ const [s,c]=sev(v); return `<tr><td><b>${k}</b></td><td><span class="badge ${c}"><span class="dot"></span>${s}</span></td><td class="r num">${fmt(v)}</td><td class="sql"><details><summary class="mono">${SQL[k].slice(0,62)}…</summary><code>${SQL[k]}</code></details></td></tr>`; }).join("")}
+  </tbody></table>`;
+  $("btnAnalyze").disabled = false; setStep(2);
+}
+
+function renderAnalyze(){
+  const d = DATA[scale];
+  $("anOut").innerHTML = `
+  <div class="log" aria-label="Agent log" style="margin-top:16px;" id="log"></div>
+  <h3 style="margin-top:20px;">Diagnoses (Gemini, grounded in EXPLAIN plans)</h3>
+  <table><tbody>${Object.keys(DIAG).map(k=>`<tr><td style="width:60px"><b>${k}</b></td><td>${DIAG[k]}</td></tr>`).join("")}</tbody></table>
+  <h3 style="margin-top:22px;">Index Proposals</h3>
+  <p class="tag" style="margin:0 0 10px;">Db2’s advisor suggested ${d.advised} indexes. reDB priced subsets on virtual indexes with <code>EVALUATE INDEXES</code> and kept 5 that retain ≥95&nbsp;% of the gain. Costs in timerons, nothing built yet.</p>
+  <div class="grid2">${IDX.map(i=>`
+    <div class="prop"><label for="ix${i.id}"><input type="checkbox" id="ix${i.id}" data-ix="${i.id}" ${approved.has(i.id)?"checked":""}>
+      <div><div class="row" style="gap:8px;"><span class="badge b-kind">Index</span><span class="badge b-ok"><span class="dot"></span>Proven by virtual index</span></div>
+      <div class="mono" style="margin-top:6px;">${i.t}</div><div class="meta">Serves ${i.serves.join(", ")} · Est. size ${i.size.replace(" ","&nbsp;")}</div>${i.warn?`<div class="note">${i.warn}</div>`:""}</div>
+      <div class="cost">Est. cost<br><b class="num">${i.cost}</b></div></label></div>`).join("")}
+    <div class="prop"><label for="ixDrop"><input type="checkbox" id="ixDrop" ${dropApproved?"checked":""}>
+      <div><div class="row" style="gap:8px;"><span class="badge b-kind">Drop</span><span class="badge b-low"><span class="dot"></span>Unused per MON_GET_INDEX</span></div>
+      <div class="mono" style="margin-top:6px;">IX_CUSTOMERS_SIGNUP_LEGACY</div><div class="meta">0 index scans since activation · undo DDL stored in the ledger</div></div>
+      <div class="cost">Housekeeping</div></label></div>
+  </div>
+  <h3 style="margin-top:22px;">Rewrite Candidates</h3>
+  <p class="tag" style="margin:0 0 10px;">Adopted only if <code>EXCEPT&nbsp;ALL</code> both ways returns 0 rows <b>and</b> the plan is ≥5&nbsp;% cheaper and not slower, or ≥25&nbsp;% faster measured.</p>
+  <table><thead><tr><th>Stmt</th><th>Rewrite</th><th>Equivalence</th><th class="r">Plan Cost</th><th class="r">Measured</th><th>Verdict</th></tr></thead><tbody>
+  ${REW.map(r=>`<tr><td><b>${r.w}</b></td><td>${r.t}</td><td><span class="badge b-ok"><span class="dot"></span>Proven identical</span></td><td class="r num">${r.cost}</td><td class="r num">${r.ms}</td><td>${r.ok?'<span class="badge b-ok"><span class="dot"></span>Adopted</span>':'<span class="badge b-no">Rejected: no gain</span>'}</td></tr>`).join("")}
+  </tbody></table>
+  <p class="tag" style="margin-top:6px;">Measured at scale 1. W3 &amp; W5 are textbook rewrites that Db2 12.1’s optimizer already handles, so reDB refuses them.</p>
+  <div class="row" style="margin-top:18px;"><button type="button" id="btnAll">Select All Proven</button><span class="spacer"></span><button type="button" class="primary" id="btnApply">Apply Approved Fixes</button></div>`;
+  const lines = ["observe   7 statements from MON_GET_PKG_CACHE_STMT","explain   EXPLAIN PLAN → EXPLAIN_OPERATOR / EXPLAIN_STREAM","diagnose  Gemini structured diagnosis ×7","prescribe RECOMMEND INDEXES → "+d.advised+" advised, 3 rewrites, 1 unused index","prove     EVALUATE INDEXES → 5 kept · EXCEPT ALL ×3 → 3 identical","recall    VECTOR_DISTANCE over REDB.TUNING_MEMORY","interrupt waiting for human approval before apply…"];
+  const log = $("log"); lines.forEach((l,i)=>setTimeout(()=>{ const e=document.createElement("div"); e.textContent=l; log.appendChild(e); log.scrollTop=log.scrollHeight; }, matchMedia("(prefers-reduced-motion: reduce)").matches?0:i*180));
+  document.querySelectorAll("[data-ix]").forEach(c=>c.addEventListener("change",e=>{ e.target.checked?approved.add(e.target.dataset.ix):approved.delete(e.target.dataset.ix); }));
+  $("ixDrop").addEventListener("change",e=>dropApproved=e.target.checked);
+  $("btnAll").onclick=()=>{ IDX.forEach(i=>approved.add(i.id)); dropApproved=true; document.querySelectorAll("#anOut input[type=checkbox]").forEach(c=>c.checked=true); };
+  $("btnApply").onclick=apply;
+  setStep(3);
+}
+
+function apply(){
+  const b=$("btnApply");
+  if(!approved.size && !dropApproved){ $("resOut").innerHTML='<div class="empty" style="margin-top:18px;">Nothing approved yet. Tick at least one proposal, then select Apply Approved Fixes.</div>'; return; }
+  b.disabled=true; b.textContent="Applying…";
+  setTimeout(()=>{
+    approved.forEach(id=>{ if(!applied.has(id)){ applied.add(id); const i=IDX.find(x=>x.id===id); ledger.push({ id:ledger.length+1, kind:"INDEX", t:"CREATE INDEX RETAIL.REDB_IX_"+i.t.split(" ")[0]+"_"+id+" ON RETAIL."+i.t, status:"APPLIED", at:stamp(), ix:id }); } });
+    if(dropApproved && !dropped){ dropped=true; ledger.push({ id:ledger.length+1, kind:"DROP", t:"DROP INDEX RETAIL.IX_CUSTOMERS_SIGNUP_LEGACY", status:"APPLIED", at:stamp() }); }
+    if(!ledger.some(l=>l.kind==="REWRITE")) ledger.push({ id:ledger.length+1, kind:"REWRITE", t:"W7: UNION → SELECT DISTINCT … IN (…)", status:"ADOPTED", at:stamp() });
+    b.disabled=false; b.textContent="Apply Approved Fixes"; renderResults(); renderLedger(); setStep(4);
+    document.getElementById("h-res").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth" });
+  }, 600);
+}
+
+function afterOf(k){ const d=DATA[scale]; return NEEDS[k].length && NEEDS[k].every(x=>applied.has(x)) ? d.after[k] : d.before[k]; }
+function renderResults(){
+  const d=DATA[scale], keys=Object.keys(d.before).sort((a,b)=>d.before[b]-d.before[a]), max=d.before[keys[0]];
+  const tb=keys.reduce((s,k)=>s+d.before[k],0), ta=keys.reduce((s,k)=>s+afterOf(k),0), pct=(1-ta/tb)*100;
+  const full = applied.size===IDX.length;
+  $("resOut").innerHTML = `
+  <div class="kpis">
+    <div class="kpi"><div class="l">Total Before</div><div class="v num">${fmt(tb)}&nbsp;ms</div><div class="c">7 statements</div></div>
+    <div class="kpi"><div class="l">Total After</div><div class="v num">${fmt(ta)}&nbsp;ms</div><div class="c">${applied.size} of 5 indexes applied</div></div>
+    <div class="kpi"><div class="l">Workload Reduction</div><div class="v num" style="color:var(--green)">−${fmt(pct)}&nbsp;%</div><div class="c">${full?"Matches the measured run":"Partial: statements whose indexes are all applied"}</div></div>
+    <div class="kpi"><div class="l">Indexes</div><div class="v num">5 of ${d.advised}</div><div class="c">Kept vs advised</div></div>
+  </div>
+  <div class="bars" role="img" aria-label="Before and after time per statement">
+  ${keys.map(k=>{ const a=afterOf(k); return `<div class="bar"><b>${k}</b><div class="track"><i class="before" style="width:${d.before[k]/max*100}%"></i><i class="after" style="width:${Math.max(a/max*100,.6)}%"></i></div><span class="num">${fmt(d.before[k])} → ${fmt(a)}&nbsp;ms</span></div>`; }).join("")}
+  </div>
+  <div class="legend"><span><span class="sw" style="background:#C6C6C6"></span>Before</span><span><span class="sw" style="background:var(--blue)"></span>After</span><span>W6 is the control: a primary-key lookup reDB leaves alone</span></div>`;
+}
+
+function renderLedger(){
+  if(!ledger.length){ $("ledOut").innerHTML='<div class="empty">No changes yet.</div>'; return; }
+  $("ledOut").innerHTML = `<table><thead><tr><th>#</th><th>Kind</th><th>Change</th><th>Status</th><th>SYS_START</th><th></th></tr></thead><tbody>
+  ${ledger.map(l=>`<tr><td class="num">${l.id}</td><td><span class="badge b-kind">${l.kind}</span></td><td class="mono">${l.t}</td><td><span class="badge ${l.status==="ROLLED_BACK"?"b-no":"b-ok"}"><span class="dot"></span>${l.status.replace("_"," ")}</span></td><td class="mono num">${l.at}</td>
+  <td>${l.kind!=="REWRITE" && l.status==="APPLIED"?`<button type="button" data-rb="${l.id}">Roll Back…</button>`:""}</td></tr>`).join("")}
+  </tbody></table><p class="tag" style="margin-top:8px;">Each status change writes the old row to <code>REDB.CHANGES_HISTORY</code>; <code>FOR SYSTEM_TIME AS OF</code> shows the ledger at any moment.</p>`;
+  document.querySelectorAll("[data-rb]").forEach(btn=>btn.onclick=()=>{
+    const l=ledger.find(x=>x.id==btn.dataset.rb);
+    if(!confirm(`Roll back change #${l.id}? This runs its undo DDL.`)) return;
+    l.status="ROLLED_BACK"; l.at=stamp();
+    if(l.ix){ applied.delete(l.ix); approved.delete(l.ix); const c=$("ix"+l.ix); if(c) c.checked=false; }
+    if(l.kind==="DROP"){ dropped=false; dropApproved=false; }
+    renderLedger(); renderResults();
+  });
+}
+
+function setScale(s){ scale=s; $("sc1").setAttribute("aria-pressed", s===1); $("sc10").setAttribute("aria-pressed", s===10);
+  if($("btnAnalyze").disabled===false) renderWork(); if(document.getElementById("btnApply")) renderAnalyze(); if(applied.size) renderResults(); }
+$("sc1").onclick=()=>setScale(1); $("sc10").onclick=()=>setScale(10);
+$("btnRun").onclick=()=>{ const b=$("btnRun"); b.disabled=true; b.textContent="Running…"; setTimeout(()=>{ renderWork(); b.disabled=false; b.textContent="Run Workload"; },500); };
+$("btnAnalyze").onclick=()=>{ const b=$("btnAnalyze"); b.disabled=true; b.textContent="Analyzing…"; setTimeout(()=>{ renderAnalyze(); b.disabled=false; b.textContent="Analyze"; },500); };
+</script>
+</body>
+</html>
