@@ -119,7 +119,7 @@ Everything works **offline** too: without a Gemini key, deterministic heuristics
 
 ```bash
 # 1. Get the code (from the submission repo use: cd submissions/redb)
-git clone https://github.com/MohamedAtiyah/Hackathon-IBM-reDB.git && cd Hackathon-IBM-reDB
+git clone https://github.com/MohamedAtiyah/reDB.git && cd reDB
 # 2. Configure (edit DB2_PASSWORD; GOOGLE_API_KEY is optional)
 cp .env.example .env
 # 3. Start Db2 (first start takes 5-10 min; ready when `docker logs redb-db2` shows "Setup has completed")
