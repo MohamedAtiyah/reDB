@@ -119,7 +119,7 @@ Everything works **offline** too: without a Gemini key, deterministic heuristics
 
 ```bash
 # 1. Get the code (from the submission repo use: cd submissions/redb)
-git clone https://github.com/MohamedAtiyah/Hackathon-IBM-reDB.git && cd Hackathon-IBM-reDB
+git clone https://github.com/MohamedAtiyah/reDB.git && cd reDB
 # 2. Configure (edit DB2_PASSWORD; GOOGLE_API_KEY is optional)
 cp .env.example .env
 # 3. Start Db2 (first start takes 5-10 min; ready when `docker logs redb-db2` shows "Setup has completed")
@@ -208,7 +208,7 @@ SELECT INDNAME, COLNAMES FROM SYSCAT.INDEXES WHERE INDNAME LIKE 'REDB_IX_%';
 
 ## Screenshots & Demo
 - **Live Demo Link:** runs locally (needs a Db2 instance); see [Setup](#setup--installation).
-- **Demo Video Link:** see `video_url` in [submission.json](submission.json).
+- **Demo Video:** [docs/demo/redb-demo.mp4](docs/demo/redb-demo.mp4) (2 min, narrated; captions in [redb-demo.srt](docs/demo/redb-demo.srt)). A hosted link, once uploaded, goes in `video_url` in [submission.json](submission.json).
 - Measured numbers: [docs/RESULTS.md](docs/RESULTS.md)
 
 | | |
