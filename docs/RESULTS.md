@@ -50,3 +50,26 @@ Run 1: 165.9 → 40.3 ms (75.7%). Sub-millisecond statements are within timing n
 Db2 12.1's optimizer already turns the `NOT IN` on NOT NULL columns into an anti-join and handles the
 date predicates, so those textbook rewrites buy nothing here. The prove step requires **equivalent AND
 (plan ≥5% cheaper and not slower, or ≥25% faster measured)**, so reDB refused to "fix" them.
+
+## Scale 10 (1M customers, 4M orders, 12M order items)
+
+`python -m redb setup --scale 10 --reseed` generated 17 million rows inside Db2 in **83 seconds**.
+Same commands, one run:
+
+| Stmt | Before (ms) | After (ms) | Gain |
+|---|---:|---:|---:|
+| W7 | 782.0 | 164.7 | 78.9% |
+| W2 | 391.1 | 0.6 | 99.8% |
+| W5 | 268.3 | 78.7 | 70.7% |
+| W3 | 197.3 | 106.0 | 46.3% |
+| W4 | 186.0 | 1.3 | 99.3% |
+| W1 | 164.9 | 0.3 | 99.8% |
+| W6 (control) | 0.6 | 0.3 | noise |
+| **Total** | **1,990.2** | **351.8** | **82.3%** |
+
+- Consolidation: the advisor suggested **9** indexes, reDB kept **5** (the same five as at scale 1).
+- The W7 rewrite alone took the statement from 782.0 to 422.8 ms (plan cost 16,441 → 8,059 timerons) and was
+  adopted; the W3 and W5 rewrites were again proven equivalent and rejected (197.3 → 192.4 ms, 268.3 → 267.0 ms).
+- Because this run followed the bulk load in the same database activation, `MON_GET_TABLE` showed real write
+  activity, and the write-cost warning fired on its own: the 289.5 MB `ORDER_ITEMS` index was flagged
+  "write-heavy table (20% of row activity is writes)". Estimated index sizes ranged from 25.5 MB to 289.5 MB.

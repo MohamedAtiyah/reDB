@@ -234,7 +234,7 @@ SELECT INDNAME, COLNAMES FROM SYSCAT.INDEXES WHERE INDNAME LIKE 'REDB_IX_%';
 
 - **Consolidation:** Db2's advisor recommended 8 indexes statement by statement. Pricing subsets with `EVALUATE INDEXES` showed 5 keep ≥95% of the gain, so 3 were never built.
 - **Rewrites:** the W7 `UNION` → `DISTINCT … IN` rewrite was proven equivalent and adopted. The two textbook rewrites (W3 `YEAR()/MONTH()` → date range, W5 `NOT IN` → `NOT EXISTS`) were **proven equivalent and then rejected**, because Db2 12.1 already optimises the originals. reDB is built to make exactly that call.
-- Scale-10 numbers (4M orders, 12M order items) are in [docs/RESULTS.md](docs/RESULTS.md).
+- **At scale 10** (4M orders, 12M order items, seeded in 83 s): **1,990 ms → 352 ms (82%)**, again with 5 indexes kept out of 9 advised. Details in [docs/RESULTS.md](docs/RESULTS.md).
 
 ---
 
